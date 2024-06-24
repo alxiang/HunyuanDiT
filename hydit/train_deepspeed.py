@@ -582,7 +582,12 @@ def main(args):
                     )
                     + f"Train Loss: {avg_loss:.4f}, "
                     f"Lr: {opt.param_groups[0]['lr']:.6g}, "
-                    f"Steps/Sec: {steps_per_sec:.2f}, "
+                    + (
+                        f"Text Encoder Lr: {opt.param_groups[1]['lr']:.6g}, "
+                        if args.train_text_encoders
+                        else ""
+                    )
+                    + f"Steps/Sec: {steps_per_sec:.2f}, "
                     f"Samples/Sec: {int(steps_per_sec * batch_size * world_size):d}"
                 )
                 # Reset monitoring variables:
