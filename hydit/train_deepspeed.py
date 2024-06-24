@@ -60,7 +60,7 @@ def deepspeed_initialize(args, logger, model, opt, deepspeed_config):
 
     if args.train_text_encoders:
         model_parameters = [
-            {"params": params, "lr": args.lr},
+            {"params": params},
             {
                 "params": text_encoder_params + text_encoder_t5_params,
                 "lr": args.text_encoder_lr,
