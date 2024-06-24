@@ -4,8 +4,15 @@ import torch.nn.functional as F
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models import ModelMixin
 from timm.models.vision_transformer import Mlp
+from hydit.constants import TEXT_ENCODER, TOKENIZER, T5_ENCODER
+from transformers import BertModel, BertTokenizer
 
-from .attn_layers import Attention, FlashCrossMHAModified, FlashSelfMHAModified, CrossAttention
+from .attn_layers import (
+    Attention,
+    FlashCrossMHAModified,
+    FlashSelfMHAModified,
+    CrossAttention,
+)
 from .embedders import TimestepEmbedder, PatchEmbed, timestep_embedding
 from .norm_layers import RMSNorm
 from .poolers import AttentionPool
@@ -26,8 +33,13 @@ def modulate(x, shift, scale):
 class FP32_Layernorm(nn.LayerNorm):
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         origin_dtype = inputs.dtype
-        return F.layer_norm(inputs.float(), self.normalized_shape, self.weight.float(), self.bias.float(),
-                            self.eps).to(origin_dtype)
+        return F.layer_norm(
+            inputs.float(),
+            self.normalized_shape,
+            self.weight.float(),
+            self.bias.float(),
+            self.eps,
+        ).to(origin_dtype)
 
 
 class FP32_SiLU(nn.SiLU):
@@ -39,17 +51,19 @@ class HunYuanDiTBlock(nn.Module):
     """
     A HunYuanDiT block with `add` conditioning.
     """
-    def __init__(self,
-                 hidden_size,
-                 c_emb_size,
-                 num_heads,
-                 mlp_ratio=4.0,
-                 text_states_dim=1024,
-                 use_flash_attn=False,
-                 qk_norm=False,
-                 norm_type="layer",
-                 skip=False,
-                 ):
+
+    def __init__(
+        self,
+        hidden_size,
+        c_emb_size,
+        num_heads,
+        mlp_ratio=4.0,
+        text_states_dim=1024,
+        use_flash_attn=False,
+        qk_norm=False,
+        norm_type="layer",
+        skip=False,
+    ):
         super().__init__()
         self.use_flash_attn = use_flash_attn
         use_ele_affine = True
@@ -62,37 +76,61 @@ class HunYuanDiTBlock(nn.Module):
             raise ValueError(f"Unknown norm_type: {norm_type}")
 
         # ========================= Self-Attention =========================
-        self.norm1 = norm_layer(hidden_size, elementwise_affine=use_ele_affine, eps=1e-6)
+        self.norm1 = norm_layer(
+            hidden_size, elementwise_affine=use_ele_affine, eps=1e-6
+        )
         if use_flash_attn:
-            self.attn1 = FlashSelfMHAModified(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=qk_norm)
+            self.attn1 = FlashSelfMHAModified(
+                hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=qk_norm
+            )
         else:
-            self.attn1 = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=qk_norm)
+            self.attn1 = Attention(
+                hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=qk_norm
+            )
 
         # ========================= FFN =========================
-        self.norm2 = norm_layer(hidden_size, elementwise_affine=use_ele_affine, eps=1e-6)
+        self.norm2 = norm_layer(
+            hidden_size, elementwise_affine=use_ele_affine, eps=1e-6
+        )
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         approx_gelu = lambda: nn.GELU(approximate="tanh")
-        self.mlp = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu, drop=0)
+        self.mlp = Mlp(
+            in_features=hidden_size,
+            hidden_features=mlp_hidden_dim,
+            act_layer=approx_gelu,
+            drop=0,
+        )
 
         # ========================= Add =========================
         # Simply use add like SDXL.
         self.default_modulation = nn.Sequential(
-            FP32_SiLU(),
-            nn.Linear(c_emb_size, hidden_size, bias=True)
+            FP32_SiLU(), nn.Linear(c_emb_size, hidden_size, bias=True)
         )
 
         # ========================= Cross-Attention =========================
         if use_flash_attn:
-            self.attn2 = FlashCrossMHAModified(hidden_size, text_states_dim, num_heads=num_heads, qkv_bias=True,
-                                               qk_norm=qk_norm)
+            self.attn2 = FlashCrossMHAModified(
+                hidden_size,
+                text_states_dim,
+                num_heads=num_heads,
+                qkv_bias=True,
+                qk_norm=qk_norm,
+            )
         else:
-            self.attn2 = CrossAttention(hidden_size, text_states_dim, num_heads=num_heads, qkv_bias=True,
-                                        qk_norm=qk_norm)
+            self.attn2 = CrossAttention(
+                hidden_size,
+                text_states_dim,
+                num_heads=num_heads,
+                qkv_bias=True,
+                qk_norm=qk_norm,
+            )
         self.norm3 = norm_layer(hidden_size, elementwise_affine=True, eps=1e-6)
 
         # ========================= Skip Connection =========================
         if skip:
-            self.skip_norm = norm_layer(2 * hidden_size, elementwise_affine=True, eps=1e-6)
+            self.skip_norm = norm_layer(
+                2 * hidden_size, elementwise_affine=True, eps=1e-6
+            )
             self.skip_linear = nn.Linear(2 * hidden_size, hidden_size)
         else:
             self.skip_linear = None
@@ -107,14 +145,13 @@ class HunYuanDiTBlock(nn.Module):
         # Self-Attention
         shift_msa = self.default_modulation(c).unsqueeze(dim=1)
         attn_inputs = (
-            self.norm1(x) + shift_msa, freq_cis_img,
+            self.norm1(x) + shift_msa,
+            freq_cis_img,
         )
         x = x + self.attn1(*attn_inputs)[0]
 
         # Cross-Attention
-        cross_inputs = (
-            self.norm3(x), text_states, freq_cis_img
-        )
+        cross_inputs = (self.norm3(x), text_states, freq_cis_img)
         x = x + self.attn2(*cross_inputs)[0]
 
         # FFN Layer
@@ -128,13 +165,17 @@ class FinalLayer(nn.Module):
     """
     The final layer of HunYuanDiT.
     """
+
     def __init__(self, final_hidden_size, c_emb_size, patch_size, out_channels):
         super().__init__()
-        self.norm_final = nn.LayerNorm(final_hidden_size, elementwise_affine=False, eps=1e-6)
-        self.linear = nn.Linear(final_hidden_size, patch_size * patch_size * out_channels, bias=True)
+        self.norm_final = nn.LayerNorm(
+            final_hidden_size, elementwise_affine=False, eps=1e-6
+        )
+        self.linear = nn.Linear(
+            final_hidden_size, patch_size * patch_size * out_channels, bias=True
+        )
         self.adaLN_modulation = nn.Sequential(
-            FP32_SiLU(),
-            nn.Linear(c_emb_size, 2 * final_hidden_size, bias=True)
+            FP32_SiLU(), nn.Linear(c_emb_size, 2 * final_hidden_size, bias=True)
         )
 
     def forward(self, x, c):
@@ -173,17 +214,19 @@ class HunYuanDiT(ModelMixin, ConfigMixin, PeftAdapterMixin):
     log_fn: callable
         The logging function.
     """
+
     @register_to_config
     def __init__(
-            self, args,
-            input_size=(32, 32),
-            patch_size=2,
-            in_channels=4,
-            hidden_size=1152,
-            depth=28,
-            num_heads=16,
-            mlp_ratio=4.0,
-            log_fn=print,
+        self,
+        args,
+        input_size=(32, 32),
+        patch_size=2,
+        in_channels=4,
+        hidden_size=1152,
+        depth=28,
+        num_heads=16,
+        mlp_ratio=4.0,
+        log_fn=print,
     ):
         super().__init__()
         self.args = args
@@ -201,10 +244,34 @@ class HunYuanDiT(ModelMixin, ConfigMixin, PeftAdapterMixin):
         self.text_len_t5 = args.text_len_t5
         self.norm = args.norm
 
-        use_flash_attn = args.infer_mode == 'fa' or args.use_flash_attn
+        use_flash_attn = args.infer_mode == "fa" or args.use_flash_attn
         if use_flash_attn:
             log_fn(f"    Enable Flash Attention.")
         qk_norm = args.qk_norm  # See http://arxiv.org/abs/2302.05442 for details.
+
+        # # Setup BERT text encoder
+        log_fn.info(f"    Loading Bert text encoder from {TEXT_ENCODER}")
+        self.text_encoder = BertModel.from_pretrained(
+            TEXT_ENCODER, False, revision=None
+        )
+        # Setup BERT tokenizer:
+        log_fn.info(f"    Loading Bert tokenizer from {TOKENIZER}")
+        self.tokenizer = BertTokenizer.from_pretrained(TOKENIZER)
+        # Setup T5 text encoder
+        from hydit.modules.text_encoder import MT5Embedder
+
+        mt5_path = T5_ENCODER["MT5"]
+        embedder_t5 = MT5Embedder(
+            mt5_path, torch_dtype=T5_ENCODER["torch_dtype"], max_length=args.text_len_t5
+        )
+        self.tokenizer_t5 = embedder_t5.tokenizer
+        self.text_encoder_t5 = embedder_t5.model
+
+        if args.extra_fp16:
+            log_fn.info(f"    Using fp16 for extra modules: vae, text_encoder")
+            vae = vae.half()
+            self.text_encoder = self.text_encoder.half()
+            self.text_encoder_t5 = self.text_encoder_t5.half()
 
         self.mlp_t5 = nn.Sequential(
             nn.Linear(self.text_states_dim_t5, self.text_states_dim_t5 * 4, bias=True),
@@ -213,10 +280,17 @@ class HunYuanDiT(ModelMixin, ConfigMixin, PeftAdapterMixin):
         )
         # learnable replace
         self.text_embedding_padding = nn.Parameter(
-            torch.randn(self.text_len + self.text_len_t5, self.text_states_dim, dtype=torch.float32))
+            torch.randn(
+                self.text_len + self.text_len_t5,
+                self.text_states_dim,
+                dtype=torch.float32,
+            )
+        )
 
         # Attention pooling
-        self.pooler = AttentionPool(self.text_len_t5, self.text_states_dim_t5, num_heads=8, output_dim=1024)
+        self.pooler = AttentionPool(
+            self.text_len_t5, self.text_states_dim_t5, num_heads=8, output_dim=1024
+        )
 
         # Here we use a default learned embedder layer for future extension.
         self.style_embedder = nn.Embedding(1, hidden_size)
@@ -239,39 +313,91 @@ class HunYuanDiT(ModelMixin, ConfigMixin, PeftAdapterMixin):
         log_fn(f"    Number of tokens: {num_patches}")
 
         # HUnYuanDiT Blocks
-        self.blocks = nn.ModuleList([
-            HunYuanDiTBlock(hidden_size=hidden_size,
-                            c_emb_size=hidden_size,
-                            num_heads=num_heads,
-                            mlp_ratio=mlp_ratio,
-                            text_states_dim=self.text_states_dim,
-                            use_flash_attn=use_flash_attn,
-                            qk_norm=qk_norm,
-                            norm_type=self.norm,
-                            skip=layer > depth // 2,
-                            )
-            for layer in range(depth)
-        ])
+        self.blocks = nn.ModuleList(
+            [
+                HunYuanDiTBlock(
+                    hidden_size=hidden_size,
+                    c_emb_size=hidden_size,
+                    num_heads=num_heads,
+                    mlp_ratio=mlp_ratio,
+                    text_states_dim=self.text_states_dim,
+                    use_flash_attn=use_flash_attn,
+                    qk_norm=qk_norm,
+                    norm_type=self.norm,
+                    skip=layer > depth // 2,
+                )
+                for layer in range(depth)
+            ]
+        )
 
-        self.final_layer = FinalLayer(hidden_size, hidden_size, patch_size, self.out_channels)
+        self.final_layer = FinalLayer(
+            hidden_size, hidden_size, patch_size, self.out_channels
+        )
         self.unpatchify_channels = self.out_channels
 
         self.initialize_weights()
 
-    def forward(self,
-                x,
-                t,
-                encoder_hidden_states=None,
-                text_embedding_mask=None,
-                encoder_hidden_states_t5=None,
-                text_embedding_mask_t5=None,
-                image_meta_size=None,
-                style=None,
-                cos_cis_img=None,
-                sin_cis_img=None,
-                return_dict=True,
-                controls=None,
-                ):
+    def get_text_info_with_encoder(self, description):
+        pad_num = 0
+        text_inputs = self.tokenizer(
+            description,
+            padding="max_length",
+            max_length=self.text_len,
+            truncation=True,
+            return_tensors="pt",
+        )
+        text_input_ids = text_inputs.input_ids[0]
+        attention_mask = text_inputs.attention_mask[0].bool()
+        if pad_num > 0:
+            attention_mask[1 : pad_num + 1] = False
+        return description, text_input_ids, attention_mask
+
+    def fill_t5_token_mask(self, fill_tensor, fill_number, setting_length):
+        fill_length = setting_length - fill_tensor.shape[1]
+        if fill_length > 0:
+            fill_tensor = torch.cat(
+                (fill_tensor, fill_number * torch.ones(1, fill_length)), dim=1
+            )
+        return fill_tensor
+
+    def get_text_info_with_encoder_t5(self, description_t5):
+        text_tokens_and_mask = self.tokenizer_t5(
+            description_t5,
+            max_length=self.text_len_t5,
+            truncation=True,
+            return_attention_mask=True,
+            add_special_tokens=True,
+            return_tensors="pt",
+        )
+        text_input_ids_t5 = self.fill_t5_token_mask(
+            text_tokens_and_mask["input_ids"],
+            fill_number=1,
+            setting_length=self.text_len_t5,
+        ).long()
+        attention_mask_t5 = self.fill_t5_token_mask(
+            text_tokens_and_mask["attention_mask"],
+            fill_number=0,
+            setting_length=self.text_len_t5,
+        ).bool()
+        return description_t5, text_input_ids_t5, attention_mask_t5
+
+    def forward(
+        self,
+        x,
+        t,
+        description,
+        description_t5,
+        # encoder_hidden_states=None,
+        # text_embedding_mask=None,
+        # encoder_hidden_states_t5=None,
+        # text_embedding_mask_t5=None,
+        image_meta_size=None,
+        style=None,
+        cos_cis_img=None,
+        sin_cis_img=None,
+        return_dict=True,
+        controls=None,
+    ):
         """
         Forward pass of the encoder.
 
@@ -298,17 +424,45 @@ class HunYuanDiT(ModelMixin, ConfigMixin, PeftAdapterMixin):
         return_dict: bool
             Whether to return a dictionary.
         """
-        text_states = encoder_hidden_states                     # 2,77,1024
-        text_states_t5 = encoder_hidden_states_t5               # 2,256,2048
-        text_states_mask = text_embedding_mask.bool()           # 2,77
-        text_states_t5_mask = text_embedding_mask_t5.bool()     # 2,256
+        # Use encoder to embed tokens online
+        text, text_embedding, text_embedding_mask = self.get_text_info_with_encoder(
+            description
+        )
+        text_t5, text_embedding_t5, text_embedding_mask_t5 = (
+            self.get_text_info_with_encoder_t5(description_t5)
+        )
+        encoder_hidden_states = self.text_encoder(
+            text_embedding,
+            attention_mask=text_embedding_mask,
+        )[0]
+        text_embedding_t5 = text_embedding_t5.squeeze(1)
+        text_embedding_mask_t5 = text_embedding_mask_t5.squeeze(1)
+        output_t5 = self.text_encoder_t5(
+            input_ids=text_embedding_t5,
+            attention_mask=(
+                text_embedding_mask_t5 if T5_ENCODER["attention_mask"] else None
+            ),
+            output_hidden_states=True,
+        )
+        encoder_hidden_states_t5 = output_t5["hidden_states"][T5_ENCODER["layer_index"]]
+
+        text_states = encoder_hidden_states  # 2,77,1024
+        text_states_t5 = encoder_hidden_states_t5  # 2,256,2048
+        text_states_mask = text_embedding_mask.bool()  # 2,77
+        text_states_t5_mask = text_embedding_mask_t5.bool()  # 2,256
         b_t5, l_t5, c_t5 = text_states_t5.shape
         text_states_t5 = self.mlp_t5(text_states_t5.view(-1, c_t5))
-        text_states = torch.cat([text_states, text_states_t5.view(b_t5, l_t5, -1)], dim=1)  # 2,205，1024
+        text_states = torch.cat(
+            [text_states, text_states_t5.view(b_t5, l_t5, -1)], dim=1
+        )  # 2,205，1024
         clip_t5_mask = torch.cat([text_states_mask, text_states_t5_mask], dim=-1)
 
         clip_t5_mask = clip_t5_mask
-        text_states = torch.where(clip_t5_mask.unsqueeze(2), text_states, self.text_embedding_padding.to(text_states))
+        text_states = torch.where(
+            clip_t5_mask.unsqueeze(2),
+            text_states,
+            self.text_embedding_padding.to(text_states),
+        )
 
         _, _, oh, ow = x.shape
         th, tw = oh // self.patch_size, ow // self.patch_size
@@ -325,7 +479,9 @@ class HunYuanDiT(ModelMixin, ConfigMixin, PeftAdapterMixin):
         extra_vec = self.pooler(encoder_hidden_states_t5)
 
         # Build image meta size tokens
-        image_meta_size = timestep_embedding(image_meta_size.view(-1), 256)   # [B * 6, 256]
+        image_meta_size = timestep_embedding(
+            image_meta_size.view(-1), 256
+        )  # [B * 6, 256]
         if self.args.use_fp16:
             image_meta_size = image_meta_size.half()
         image_meta_size = image_meta_size.view(-1, 6 * 256)
@@ -346,21 +502,23 @@ class HunYuanDiT(ModelMixin, ConfigMixin, PeftAdapterMixin):
                     skip = skips.pop() + controls.pop()
                 else:
                     skip = skips.pop()
-                x = block(x, c, text_states, freqs_cis_img, skip)   # (N, L, D)
+                x = block(x, c, text_states, freqs_cis_img, skip)  # (N, L, D)
             else:
-                x = block(x, c, text_states, freqs_cis_img)         # (N, L, D)
+                x = block(x, c, text_states, freqs_cis_img)  # (N, L, D)
 
             if layer < (self.depth // 2 - 1):
                 skips.append(x)
         if controls is not None and len(controls) != 0:
-            raise ValueError("The number of controls is not equal to the number of skip connections.")
+            raise ValueError(
+                "The number of controls is not equal to the number of skip connections."
+            )
 
         # ========================= Final layer =========================
-        x = self.final_layer(x, c)                              # (N, L, patch_size ** 2 * out_channels)
-        x = self.unpatchify(x, th, tw)                          # (N, out_channels, H, W)
+        x = self.final_layer(x, c)  # (N, L, patch_size ** 2 * out_channels)
+        x = self.unpatchify(x, th, tw)  # (N, out_channels, H, W)
 
         if return_dict:
-            return {'x': x}
+            return {"x": x}
         return x
 
     def initialize_weights(self):
@@ -370,6 +528,7 @@ class HunYuanDiT(ModelMixin, ConfigMixin, PeftAdapterMixin):
                 torch.nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
+
         self.apply(_basic_init)
 
         # Initialize patch_embed like nn.Linear (instead of nn.Conv2d):
@@ -407,7 +566,7 @@ class HunYuanDiT(ModelMixin, ConfigMixin, PeftAdapterMixin):
         assert h * w == x.shape[1]
 
         x = x.reshape(shape=(x.shape[0], h, w, p, p, c))
-        x = torch.einsum('nhwpqc->nchpwq', x)
+        x = torch.einsum("nhwpqc->nchpwq", x)
         imgs = x.reshape(shape=(x.shape[0], c, h * p, w * p))
         return imgs
 
@@ -442,11 +601,13 @@ class HunYuanDiT(ModelMixin, ConfigMixin, PeftAdapterMixin):
             if "ranknum" in name:
                 module.to(child.weight.device)
 
-    def merge_and_unload(self,
-                         merge=True,
-                        progressbar: bool = False,
-                        safe_merge: bool = False,
-                        adapter_names = None,):
+    def merge_and_unload(
+        self,
+        merge=True,
+        progressbar: bool = False,
+        safe_merge: bool = False,
+        adapter_names=None,
+    ):
         if merge:
             if getattr(self, "quantization_method", None) == "gptq":
                 raise ValueError("Cannot merge layers when the model is gptq quantized")
@@ -475,17 +636,20 @@ class HunYuanDiT(ModelMixin, ConfigMixin, PeftAdapterMixin):
             if hasattr(target, "base_layer"):
                 if merge:
                     merge_recursively(target)
-                self._replace_module(parent, target_name, target.get_base_layer(), target)
+                self._replace_module(
+                    parent, target_name, target.get_base_layer(), target
+                )
             elif isinstance(target, ModulesToSaveWrapper):
                 # save any additional trainable modules part of `modules_to_save`
                 new_module = target.modules_to_save[target.active_adapter]
                 if hasattr(new_module, "base_layer"):
                     # check if the module is itself a tuner layer
                     if merge:
-                        new_module.merge(safe_merge=safe_merge, adapter_names=adapter_names)
+                        new_module.merge(
+                            safe_merge=safe_merge, adapter_names=adapter_names
+                        )
                     new_module = new_module.get_base_layer()
                 setattr(parent, target_name, new_module)
-
 
 
 #################################################################################
@@ -493,16 +657,36 @@ class HunYuanDiT(ModelMixin, ConfigMixin, PeftAdapterMixin):
 #################################################################################
 
 HUNYUAN_DIT_CONFIG = {
-    'DiT-g/2': {'depth': 40, 'hidden_size': 1408, 'patch_size': 2, 'num_heads': 16, 'mlp_ratio': 4.3637},
-    'DiT-XL/2': {'depth': 28, 'hidden_size': 1152, 'patch_size': 2, 'num_heads': 16},
+    "DiT-g/2": {
+        "depth": 40,
+        "hidden_size": 1408,
+        "patch_size": 2,
+        "num_heads": 16,
+        "mlp_ratio": 4.3637,
+    },
+    "DiT-XL/2": {"depth": 28, "hidden_size": 1152, "patch_size": 2, "num_heads": 16},
 }
 
+
 def DiT_g_2(args, **kwargs):
-    return HunYuanDiT(args, depth=40, hidden_size=1408, patch_size=2, num_heads=16, mlp_ratio=4.3637, **kwargs)
+    return HunYuanDiT(
+        args,
+        depth=40,
+        hidden_size=1408,
+        patch_size=2,
+        num_heads=16,
+        mlp_ratio=4.3637,
+        **kwargs,
+    )
+
+
 def DiT_XL_2(args, **kwargs):
-    return HunYuanDiT(args, depth=28, hidden_size=1152, patch_size=2, num_heads=16, **kwargs)
+    return HunYuanDiT(
+        args, depth=28, hidden_size=1152, patch_size=2, num_heads=16, **kwargs
+    )
+
 
 HUNYUAN_DIT_MODELS = {
-    'DiT-g/2':  DiT_g_2,
-    'DiT-XL/2': DiT_XL_2,
+    "DiT-g/2": DiT_g_2,
+    "DiT-XL/2": DiT_XL_2,
 }
