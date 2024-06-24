@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -243,6 +244,7 @@ class HunYuanDiT(ModelMixin, ConfigMixin, PeftAdapterMixin):
         self.text_len = args.text_len
         self.text_len_t5 = args.text_len_t5
         self.norm = args.norm
+        self.train_text_encoders = args.train_text_encoders
 
         use_flash_attn = args.infer_mode == "fa" or args.use_flash_attn
         if use_flash_attn:
@@ -424,27 +426,33 @@ class HunYuanDiT(ModelMixin, ConfigMixin, PeftAdapterMixin):
         return_dict: bool
             Whether to return a dictionary.
         """
-        # Use encoder to embed tokens online
-        text, text_embedding, text_embedding_mask = self.get_text_info_with_encoder(
-            description
-        )
-        text_t5, text_embedding_t5, text_embedding_mask_t5 = (
-            self.get_text_info_with_encoder_t5(description_t5)
-        )
-        encoder_hidden_states = self.text_encoder(
-            text_embedding,
-            attention_mask=text_embedding_mask,
-        )[0]
-        text_embedding_t5 = text_embedding_t5.squeeze(1)
-        text_embedding_mask_t5 = text_embedding_mask_t5.squeeze(1)
-        output_t5 = self.text_encoder_t5(
-            input_ids=text_embedding_t5,
-            attention_mask=(
-                text_embedding_mask_t5 if T5_ENCODER["attention_mask"] else None
-            ),
-            output_hidden_states=True,
-        )
-        encoder_hidden_states_t5 = output_t5["hidden_states"][T5_ENCODER["layer_index"]]
+
+        context = torch.no_grad() if self.train_text_encoders else nullcontext()
+
+        with context:
+            # Use encoder to embed tokens online
+            text, text_embedding, text_embedding_mask = self.get_text_info_with_encoder(
+                description
+            )
+            text_t5, text_embedding_t5, text_embedding_mask_t5 = (
+                self.get_text_info_with_encoder_t5(description_t5)
+            )
+            encoder_hidden_states = self.text_encoder(
+                text_embedding,
+                attention_mask=text_embedding_mask,
+            )[0]
+            text_embedding_t5 = text_embedding_t5.squeeze(1)
+            text_embedding_mask_t5 = text_embedding_mask_t5.squeeze(1)
+            output_t5 = self.text_encoder_t5(
+                input_ids=text_embedding_t5,
+                attention_mask=(
+                    text_embedding_mask_t5 if T5_ENCODER["attention_mask"] else None
+                ),
+                output_hidden_states=True,
+            )
+            encoder_hidden_states_t5 = output_t5["hidden_states"][
+                T5_ENCODER["layer_index"]
+            ]
 
         text_states = encoder_hidden_states  # 2,77,1024
         text_states_t5 = encoder_hidden_states_t5  # 2,256,2048

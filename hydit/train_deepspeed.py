@@ -55,9 +55,21 @@ def deepspeed_initialize(args, logger, model, opt, deepspeed_config):
     logger.info(
         f"    Building scheduler with warmup_min_lr={args.warmup_min_lr}, warmup_num_steps={args.warmup_num_steps}"
     )
+
+    params, text_encoder_params, text_encoder_t5_params = get_trainable_params(model)
+
+    if args.train_text_encoders:
+        model_parameters = [
+            {"params": params, "lr": args.lr},
+            {
+                "params": text_encoder_params + text_encoder_t5_params,
+                "lr": args.text_encoder_lr,
+            },
+        ]
+
     model, opt, _, scheduler = deepspeed.initialize(
         model=model,
-        model_parameters=get_trainable_params(model),
+        model_parameters=model_parameters,
         config_params=deepspeed_config,
         args=args,
         lr_scheduler=(
@@ -307,6 +319,9 @@ def main(args):
     logger.info(
         f"    Optimizer parameters: lr={args.lr}, weight_decay={args.weight_decay}"
     )
+    logger.info(
+        f"  Training text encoders: {args.train_text_encoders}, text encoder lr={args.text_encoder_lr}"
+    )
     logger.info("    Using deepspeed optimizer")
     opt = None
 
@@ -417,9 +432,15 @@ def main(args):
     logger.info(
         f"      Number parameters:         {sum(p.numel() for p in model.parameters()):,}"
     )
-    logger.info(
-        f"      Number trainable params:   {sum(p.numel() for p in get_trainable_params(model)):,}"
-    )
+    params, text_encoder_params, text_encoder_t5_params = get_trainable_params(model)
+    if args.train_text_encoders:
+        num_trainable_params = sum(
+            p.numel() for p in params + text_encoder_params + text_encoder_t5_params
+        )
+    else:
+        num_trainable_params = sum(p.numel() for p in params)
+
+    logger.info(f"      Number trainable params:   {num_trainable_params:,}")
     logger.info(
         "    ------------------------------------------------------------------------------"
     )
