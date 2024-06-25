@@ -251,24 +251,6 @@ class HunYuanDiT(ModelMixin, ConfigMixin, PeftAdapterMixin):
             log_fn(f"    Enable Flash Attention.")
         qk_norm = args.qk_norm  # See http://arxiv.org/abs/2302.05442 for details.
 
-        # # Setup BERT text encoder
-        log_fn(f"    Loading Bert text encoder from {TEXT_ENCODER}")
-        self.text_encoder = BertModel.from_pretrained(
-            TEXT_ENCODER, False, revision=None
-        )
-        # Setup BERT tokenizer:
-        log_fn(f"    Loading Bert tokenizer from {TOKENIZER}")
-        self.tokenizer = BertTokenizer.from_pretrained(TOKENIZER)
-        # Setup T5 text encoder
-        from hydit.modules.text_encoder import MT5Embedder
-
-        mt5_path = T5_ENCODER["MT5"]
-        embedder_t5 = MT5Embedder(
-            mt5_path, torch_dtype=T5_ENCODER["torch_dtype"], max_length=args.text_len_t5
-        )
-        self.tokenizer_t5 = embedder_t5.tokenizer
-        self.text_encoder_t5 = embedder_t5.model
-
         if args.extra_fp16:
             log_fn(f"    Using fp16 for extra modules: text_encoder")
             self.text_encoder = self.text_encoder.half()
@@ -338,60 +320,28 @@ class HunYuanDiT(ModelMixin, ConfigMixin, PeftAdapterMixin):
 
         self.initialize_weights()
 
-    def get_text_info_with_encoder(self, description):
-        pad_num = 0
-        text_inputs = self.tokenizer(
-            description,
-            padding="max_length",
-            max_length=self.text_len,
-            truncation=True,
-            return_tensors="pt",
+        # Setup BERT text encoder
+        log_fn(f"    Loading Bert text encoder from {TEXT_ENCODER}")
+        self.text_encoder = BertModel.from_pretrained(
+            TEXT_ENCODER, False, revision=None
         )
-        text_input_ids = text_inputs.input_ids[0]
-        attention_mask = text_inputs.attention_mask[0].bool()
-        if pad_num > 0:
-            attention_mask[1 : pad_num + 1] = False
-        return description, text_input_ids, attention_mask
+        # Setup T5 text encoder
+        from hydit.modules.text_encoder import MT5Embedder
 
-    def fill_t5_token_mask(self, fill_tensor, fill_number, setting_length):
-        fill_length = setting_length - fill_tensor.shape[1]
-        if fill_length > 0:
-            fill_tensor = torch.cat(
-                (fill_tensor, fill_number * torch.ones(1, fill_length)), dim=1
-            )
-        return fill_tensor
-
-    def get_text_info_with_encoder_t5(self, description_t5):
-        text_tokens_and_mask = self.tokenizer_t5(
-            description_t5,
-            max_length=self.text_len_t5,
-            truncation=True,
-            return_attention_mask=True,
-            add_special_tokens=True,
-            return_tensors="pt",
+        mt5_path = T5_ENCODER["MT5"]
+        embedder_t5 = MT5Embedder(
+            mt5_path, torch_dtype=T5_ENCODER["torch_dtype"], max_length=args.text_len_t5
         )
-        text_input_ids_t5 = self.fill_t5_token_mask(
-            text_tokens_and_mask["input_ids"],
-            fill_number=1,
-            setting_length=self.text_len_t5,
-        ).long()
-        attention_mask_t5 = self.fill_t5_token_mask(
-            text_tokens_and_mask["attention_mask"],
-            fill_number=0,
-            setting_length=self.text_len_t5,
-        ).bool()
-        return description_t5, text_input_ids_t5, attention_mask_t5
+        self.text_encoder_t5 = embedder_t5.model
 
     def forward(
         self,
         x,
         t,
-        description,
-        description_t5,
-        # encoder_hidden_states=None,
-        # text_embedding_mask=None,
-        # encoder_hidden_states_t5=None,
-        # text_embedding_mask_t5=None,
+        text_embedding=None,
+        text_embedding_mask=None,
+        text_embedding_t5=None,
+        text_embedding_mask_t5=None,
         image_meta_size=None,
         style=None,
         cos_cis_img=None,
@@ -430,12 +380,6 @@ class HunYuanDiT(ModelMixin, ConfigMixin, PeftAdapterMixin):
 
         with context:
             # Use encoder to embed tokens online
-            text, text_embedding, text_embedding_mask = self.get_text_info_with_encoder(
-                description
-            )
-            text_t5, text_embedding_t5, text_embedding_mask_t5 = (
-                self.get_text_info_with_encoder_t5(description_t5)
-            )
             encoder_hidden_states = self.text_encoder(
                 text_embedding,
                 attention_mask=text_embedding_mask,

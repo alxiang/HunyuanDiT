@@ -37,7 +37,11 @@ class TextImageArrowStream(Dataset):
         random_shrink_size_cond=False,
         merge_src_cond=False,
         uncond_p=0.0,
+        text_ctx_len=77,
+        tokenizer=None,
         uncond_p_t5=0.0,
+        text_ctx_len_t5=256,
+        tokenizer_t5=None,
     ):
         self.args = args
         self.resolution = resolution
@@ -56,9 +60,13 @@ class TextImageArrowStream(Dataset):
 
         # clip params
         self.uncond_p = uncond_p
+        self.text_ctx_len = text_ctx_len
+        self.tokenizer = tokenizer
 
         # t5 params
         self.uncond_p_t5 = uncond_p_t5
+        self.text_ctx_len_t5 = text_ctx_len_t5
+        self.tokenizer_t5 = tokenizer_t5
 
         # size condition
         self.random_shrink_size_cond = random_shrink_size_cond
@@ -194,6 +202,50 @@ class TextImageArrowStream(Dataset):
 
         return image_tensor, kwargs
 
+    def get_text_info_with_encoder(self, description):
+        pad_num = 0
+        text_inputs = self.tokenizer(
+            description,
+            padding="max_length",
+            max_length=self.text_len,
+            truncation=True,
+            return_tensors="pt",
+        )
+        text_input_ids = text_inputs.input_ids[0]
+        attention_mask = text_inputs.attention_mask[0].bool()
+        if pad_num > 0:
+            attention_mask[1 : pad_num + 1] = False
+        return description, text_input_ids, attention_mask
+
+    def fill_t5_token_mask(self, fill_tensor, fill_number, setting_length):
+        fill_length = setting_length - fill_tensor.shape[1]
+        if fill_length > 0:
+            fill_tensor = torch.cat(
+                (fill_tensor, fill_number * torch.ones(1, fill_length)), dim=1
+            )
+        return fill_tensor
+
+    def get_text_info_with_encoder_t5(self, description_t5):
+        text_tokens_and_mask = self.tokenizer_t5(
+            description_t5,
+            max_length=self.text_len_t5,
+            truncation=True,
+            return_attention_mask=True,
+            add_special_tokens=True,
+            return_tensors="pt",
+        )
+        text_input_ids_t5 = self.fill_t5_token_mask(
+            text_tokens_and_mask["input_ids"],
+            fill_number=1,
+            setting_length=self.text_len_t5,
+        ).long()
+        attention_mask_t5 = self.fill_t5_token_mask(
+            text_tokens_and_mask["attention_mask"],
+            fill_number=0,
+            setting_length=self.text_len_t5,
+        ).bool()
+        return description_t5, text_input_ids_t5, attention_mask_t5
+
     def get_original_text(self, ind):
         text = self.index_manager.get_attribute(
             ind, "text_zh" if self.enable_CN else "text_en"
@@ -222,10 +274,20 @@ class TextImageArrowStream(Dataset):
 
         original_pil_image, kwargs = self.get_image_with_hwxy(ind)
 
+        # Use encoder to embed tokens online
+        text, text_embedding, text_embedding_mask = self.get_text_info_with_encoder(
+            description
+        )
+
+        text_t5, text_embedding_t5, text_embedding_mask_t5 = (
+            self.get_text_info_with_encoder_t5(description_t5)
+        )
         return (
             original_pil_image,
-            description,
-            description_t5,
+            text_embedding.clone().detach(),
+            text_embedding_mask.clone().detach(),
+            text_embedding_t5.clone().detach(),
+            text_embedding_mask_t5.clone().detach(),
             {k: torch.tensor(np.array(v)).clone().detach() for k, v in kwargs.items()},
         )
 

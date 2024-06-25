@@ -19,10 +19,11 @@ from torch.utils.data import DataLoader
 from torch.distributed.optim import ZeroRedundancyOptimizer
 from torchvision.transforms import functional as TF
 from diffusers.models import AutoencoderKL
-from transformers import logging as tf_logging
+from transformers import logging as tf_logging, BertTokenizer
+
 
 from hydit.config import get_args
-from hydit.constants import VAE_EMA_PATH, T5_ENCODER
+from hydit.constants import TOKENIZER, VAE_EMA_PATH, T5_ENCODER
 from hydit.lr_scheduler import WarmupLR
 from hydit.data_loader.arrow_load_stream import TextImageArrowStream
 from hydit.diffusion import create_diffusion
@@ -161,8 +162,10 @@ def save_checkpoint(args, rank, logger, model, ema, epoch, train_steps, checkpoi
 def prepare_model_inputs(args, batch, device, vae, freqs_cis_img):
     (
         image,
-        description,
-        description_t5,
+        text_embedding,
+        text_embedding_mask,
+        text_embedding_t5,
+        text_embedding_mask_t5,
         kwargs,
     ) = batch
 
@@ -188,8 +191,10 @@ def prepare_model_inputs(args, batch, device, vae, freqs_cis_img):
 
     # Model conditions
     model_kwargs = dict(
-        description=description,
-        description_t5=description_t5,
+        text_embedding=text_embedding,
+        text_embedding_mask=text_embedding_mask,
+        text_embedding_t5=text_embedding_t5,
+        text_embedding_mask_t5=text_embedding_mask_t5,
         image_meta_size=image_meta_size,
         style=style,
         cos_cis_img=cos_cis_img,
@@ -325,6 +330,17 @@ def main(args):
     # Setup VAE
     logger.info(f"    Loading vae from {VAE_EMA_PATH}")
     vae = AutoencoderKL.from_pretrained(VAE_EMA_PATH)
+    # Setup BERT tokenizer:
+    logger.info(f"    Loading Bert tokenizer from {TOKENIZER}")
+    tokenizer = BertTokenizer.from_pretrained(TOKENIZER)
+    # Setup T5 text encoder
+    from hydit.modules.text_encoder import MT5Embedder
+
+    mt5_path = T5_ENCODER["MT5"]
+    embedder_t5 = MT5Embedder(
+        mt5_path, torch_dtype=T5_ENCODER["torch_dtype"], max_length=args.text_len_t5
+    )
+    tokenizer_t5 = embedder_t5.tokenizer
 
     if args.extra_fp16:
         logger.info(f"    Using fp16 for extra modules: vae, text_encoder")
@@ -360,7 +376,11 @@ def main(args):
         random_shrink_size_cond=args.random_shrink_size_cond,
         merge_src_cond=args.merge_src_cond,
         uncond_p=args.uncond_p,
+        text_ctx_len=args.text_len,
+        tokenizer=tokenizer,
         uncond_p_t5=args.uncond_p_t5,
+        text_ctx_len_t5=args.text_len_t5,
+        tokenizer_t5=tokenizer_t5,
     )
     if args.multireso:
         sampler = BlockDistributedSampler(
