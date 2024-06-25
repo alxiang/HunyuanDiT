@@ -270,8 +270,7 @@ class HunYuanDiT(ModelMixin, ConfigMixin, PeftAdapterMixin):
         self.text_encoder_t5 = embedder_t5.model
 
         if args.extra_fp16:
-            log_fn(f"    Using fp16 for extra modules: vae, text_encoder")
-            vae = vae.half()
+            log_fn(f"    Using fp16 for extra modules: text_encoder")
             self.text_encoder = self.text_encoder.half()
             self.text_encoder_t5 = self.text_encoder_t5.half()
 

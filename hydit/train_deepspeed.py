@@ -57,13 +57,19 @@ def deepspeed_initialize(args, logger, model, opt, deepspeed_config):
         f"    Building scheduler with warmup_min_lr={args.warmup_min_lr}, warmup_num_steps={args.warmup_num_steps}"
     )
 
-    params, text_encoder_params, text_encoder_t5_params = get_trainable_params(model)
+    params, text_encoder_params = get_trainable_params(model)
+
+    print(
+        "PARAM LENGTHS",
+        len(params),
+        len(text_encoder_params),
+    )
 
     if args.train_text_encoders:
         model_parameters = [
             {"params": params},
             {
-                "params": text_encoder_params + text_encoder_t5_params,
+                "params": text_encoder_params,
                 "lr": args.text_encoder_lr,
             },
         ]
@@ -199,7 +205,7 @@ def main(args):
 
     assert torch.cuda.is_available(), "Training currently requires at least one GPU."
 
-    run = wandb.init(project="animagine-training", config=vars(args), group="animagine")
+    # run = wandb.init(project="animagine-training", config=vars(args), group="animagine")
 
     dist.init_process_group("nccl")
     world_size = dist.get_world_size()
@@ -320,11 +326,17 @@ def main(args):
     logger.info(f"    Loading vae from {VAE_EMA_PATH}")
     vae = AutoencoderKL.from_pretrained(VAE_EMA_PATH)
 
+    if args.extra_fp16:
+        logger.info(f"    Using fp16 for extra modules: vae, text_encoder")
+        vae = vae.half().to(device)
+    else:
+        vae = vae.to(device)
+
     logger.info(
         f"    Optimizer parameters: lr={args.lr}, weight_decay={args.weight_decay}"
     )
     logger.info(
-        f"  Training text encoders: {args.train_text_encoders}, text encoder lr={args.text_encoder_lr}"
+        f"    Training text encoders: {args.train_text_encoders}, text encoder lr={args.text_encoder_lr}"
     )
     logger.info("    Using deepspeed optimizer")
     opt = None
@@ -436,11 +448,9 @@ def main(args):
     logger.info(
         f"      Number parameters:         {sum(p.numel() for p in model.parameters()):,}"
     )
-    params, text_encoder_params, text_encoder_t5_params = get_trainable_params(model)
+    params, text_encoder_params = get_trainable_params(model)
     if args.train_text_encoders:
-        num_trainable_params = sum(
-            p.numel() for p in params + text_encoder_params + text_encoder_t5_params
-        )
+        num_trainable_params = sum(p.numel() for p in params + text_encoder_params)
     else:
         num_trainable_params = sum(p.numel() for p in params)
 
@@ -594,10 +604,10 @@ def main(args):
                     + f"Steps/Sec: {steps_per_sec:.2f}, "
                     f"Samples/Sec: {int(steps_per_sec * batch_size * world_size):d}"
                 )
-                wandb.log(
-                    {"loss": avg_loss, "lr": opt.param_groups[0]["lr"]},
-                    step=train_steps,
-                )
+                # wandb.log(
+                #     {"loss": avg_loss, "lr": opt.param_groups[0]["lr"]},
+                #     step=train_steps,
+                # )
                 # Reset monitoring variables:
                 running_loss = 0
                 log_steps = 0
