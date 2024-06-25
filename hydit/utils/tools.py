@@ -14,22 +14,31 @@ import os
 
 
 def get_trainable_params(model):
-    all_params = model.parameters()
-    all_params = [p for p in all_params if p.requires_grad]
+    all_params = {name: p for name, p in model.named_parameters() if p.requires_grad}
 
-    text_encoder_params = list(model.text_encoder.parameters())
-    text_encoder_t5_params = list(model.text_encoder_t5.parameters())
-    text_encoder_params = [p for p in text_encoder_params if p.requires_grad]
-    text_encoder_t5_params = [p for p in text_encoder_t5_params if p.requires_grad]
+    text_encoder_params = {
+        name: p
+        for name, p in model.module.text_encoder.named_parameters()
+        if p.requires_grad
+    }
+    text_encoder_t5_params = {
+        name: p
+        for name, p in model.module.text_encoder_t5.named_parameters()
+        if p.requires_grad
+    }
 
     # Get remaining trainable parameters
-    params = [
-        p
-        for p in params
-        if p not in text_encoder_params and p not in text_encoder_t5_params
-    ]
+    params = {
+        name: p
+        for name, p in all_params.items()
+        if name not in text_encoder_params and name not in text_encoder_t5_params
+    }
 
-    return params, text_encoder_params, text_encoder_t5_params
+    return (
+        list(params.values()),
+        list(text_encoder_params.values()),
+        list(text_encoder_t5_params.values()),
+    )
 
 
 def set_seeds(seed_list, device=None):
