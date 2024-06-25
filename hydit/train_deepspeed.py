@@ -169,6 +169,11 @@ def prepare_model_inputs(args, batch, device, vae, freqs_cis_img):
         kwargs,
     ) = batch
 
+    text_embedding = text_embedding.to(device)
+    text_embedding_mask = text_embedding_mask.to(device)
+    text_embedding_t5 = text_embedding_t5.to(device)
+    text_embedding_mask_t5 = text_embedding_mask_t5.to(device)
+
     # additional condition
     image_meta_size = kwargs["image_meta_size"].to(device)
     style = kwargs["style"].to(device)

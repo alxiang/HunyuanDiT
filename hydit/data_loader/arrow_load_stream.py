@@ -207,7 +207,7 @@ class TextImageArrowStream(Dataset):
         text_inputs = self.tokenizer(
             description,
             padding="max_length",
-            max_length=self.text_len,
+            max_length=self.text_ctx_len,
             truncation=True,
             return_tensors="pt",
         )
@@ -228,7 +228,7 @@ class TextImageArrowStream(Dataset):
     def get_text_info_with_encoder_t5(self, description_t5):
         text_tokens_and_mask = self.tokenizer_t5(
             description_t5,
-            max_length=self.text_len_t5,
+            max_length=self.text_ctx_len_t5,
             truncation=True,
             return_attention_mask=True,
             add_special_tokens=True,
@@ -237,12 +237,12 @@ class TextImageArrowStream(Dataset):
         text_input_ids_t5 = self.fill_t5_token_mask(
             text_tokens_and_mask["input_ids"],
             fill_number=1,
-            setting_length=self.text_len_t5,
+            setting_length=self.text_ctx_len_t5,
         ).long()
         attention_mask_t5 = self.fill_t5_token_mask(
             text_tokens_and_mask["attention_mask"],
             fill_number=0,
-            setting_length=self.text_len_t5,
+            setting_length=self.text_ctx_len_t5,
         ).bool()
         return description_t5, text_input_ids_t5, attention_mask_t5
 
