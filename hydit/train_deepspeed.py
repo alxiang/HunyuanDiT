@@ -8,6 +8,7 @@ from functools import partial
 from glob import glob
 from pathlib import Path
 import numpy as np
+import wandb
 
 import deepspeed
 import torch
@@ -198,6 +199,8 @@ def main(args):
 
     assert torch.cuda.is_available(), "Training currently requires at least one GPU."
 
+    run = wandb.init(project="animagine-training", config=vars(args), group="animagine")
+
     dist.init_process_group("nccl")
     world_size = dist.get_world_size()
     batch_size = args.batch_size
@@ -224,8 +227,9 @@ def main(args):
     # Save to a json file
     args_dict = vars(args)
     args_dict["world_size"] = world_size
-    with open(f"{experiment_dir}/args.json", "w") as f:
-        json.dump(args_dict, f, indent=4)
+    if rank == 0:
+        with open(f"{experiment_dir}/args.json", "w") as f:
+            json.dump(args_dict, f, indent=4)
 
     # Disable the message "Some weights of the model checkpoint at ... were not used when initializing BertModel."
     # If needed, just comment the following line.
@@ -589,6 +593,10 @@ def main(args):
                     )
                     + f"Steps/Sec: {steps_per_sec:.2f}, "
                     f"Samples/Sec: {int(steps_per_sec * batch_size * world_size):d}"
+                )
+                wandb.log(
+                    {"loss": avg_loss, "lr": opt.param_groups[0]["lr"]},
+                    step=train_steps,
                 )
                 # Reset monitoring variables:
                 running_loss = 0

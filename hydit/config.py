@@ -263,7 +263,7 @@ def get_args(default_args=None):
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--text-encoder-lr", type=float, default=1e-4)
     parser.add_argument(
-        "--train-text_encoders",
+        "--train-text-encoders",
         action="store_true",
     )
     parser.add_argument("--epochs", type=int, default=1400)

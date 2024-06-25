@@ -252,12 +252,12 @@ class HunYuanDiT(ModelMixin, ConfigMixin, PeftAdapterMixin):
         qk_norm = args.qk_norm  # See http://arxiv.org/abs/2302.05442 for details.
 
         # # Setup BERT text encoder
-        log_fn.info(f"    Loading Bert text encoder from {TEXT_ENCODER}")
+        log_fn(f"    Loading Bert text encoder from {TEXT_ENCODER}")
         self.text_encoder = BertModel.from_pretrained(
             TEXT_ENCODER, False, revision=None
         )
         # Setup BERT tokenizer:
-        log_fn.info(f"    Loading Bert tokenizer from {TOKENIZER}")
+        log_fn(f"    Loading Bert tokenizer from {TOKENIZER}")
         self.tokenizer = BertTokenizer.from_pretrained(TOKENIZER)
         # Setup T5 text encoder
         from hydit.modules.text_encoder import MT5Embedder
@@ -270,7 +270,7 @@ class HunYuanDiT(ModelMixin, ConfigMixin, PeftAdapterMixin):
         self.text_encoder_t5 = embedder_t5.model
 
         if args.extra_fp16:
-            log_fn.info(f"    Using fp16 for extra modules: vae, text_encoder")
+            log_fn(f"    Using fp16 for extra modules: vae, text_encoder")
             vae = vae.half()
             self.text_encoder = self.text_encoder.half()
             self.text_encoder_t5 = self.text_encoder_t5.half()
